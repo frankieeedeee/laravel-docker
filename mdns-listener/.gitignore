@@ -1,0 +1,5 @@
+node_modules
+dist
+mdns-listener.plist
+mdns.conf.json
+hosts.mdns

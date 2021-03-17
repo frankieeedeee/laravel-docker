@@ -1,0 +1,16 @@
+# PHP Docker File
+FROM php:7.4-fpm-alpine
+
+# Install Composer
+COPY --from=composer:2.0.8 /usr/bin/composer /usr/bin/composer
+
+# Install PDO
+RUN docker-php-ext-install pdo pdo_mysql bcmath
+
+# Install MySql Client, Redis
+RUN apk add --no-cache pcre-dev mysql-client $PHPIZE_DEPS \
+        && pecl install redis \
+        && docker-php-ext-enable redis.so
+
+# Install pcntl
+RUN docker-php-ext-install pcntl

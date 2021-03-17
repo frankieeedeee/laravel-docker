@@ -1,0 +1,221 @@
+#!/bin/bash
+
+# Check run as sudo
+if ! [ "$EUID" -ne 0 ]
+then
+    tput setab 1
+    echo
+    echo "ROOT USER"
+    tput sgr0
+    echo "Please run this script as a non-root user"
+    echo
+
+    exit
+fi
+
+# Virtual Host File
+VHOST_FILE=./mdns-listener/hosts.mdns
+
+# Determine direction
+DIR=$1
+
+# Default Setting for Updates
+BYPASS_UPDATES=0
+
+# Loop through arguments and process them
+for arg in "$@"
+do
+    case $arg in
+        -bu|--bypass-updates)
+        BYPASS_UPDATES=1
+        shift # Remove --initialize from processing
+        ;;
+    esac
+done
+
+if [[ "$DIR" != "up" ]] && [[ "$DIR" != "down" ]]
+then
+    echo "Please specify UP or DOWN"
+    exit 1
+fi
+
+# Determine if Laravel has been installed
+if ! test -f "./src/composer.json"
+then
+    echo "Uh oh, looks like Laravel hasn't been installed yet. Try running:"
+    echo "> docker-composer run --rm composer create-project laravel/laravel ./"
+    exit 1
+fi
+exit 0
+
+# Create Virtual Host name
+VH_BASE_NAME="`basename $(PWD)`.local"
+
+# Check SSL Configuration
+if [[ "$DIR" != "down" ]] && ! test -f "./nginx/development-certificate.crt" || ! test -f "./nginx/development-key.key"
+then
+    read -p "A local SSL certificate/key pair has not yet been created - Would you like to create it now?" -n 1 -r
+    echo    # (optional) move to a new line
+    if [[ $REPLY =~ ^[Yy]$ ]]
+    then
+        # Create key
+        echo "Generating key..."
+        openssl genrsa -out ./nginx/development-key.key 2048
+
+        # Generate CSR
+        openssl req -new -key ./nginx/development-key.key -out ./nginx/development-certificate-request.csr
+
+        # Create config
+        echo -e "authorityKeyIdentifier=keyid,issuer\nbasicConstraints=CA:FALSE\nkeyUsage = digitalSignature, nonRepudiation, keyEncipherment, dataEncipherment\nsubjectAltName = @alt_names\n\n[alt_names]\nDNS.1 = $VH_BASE_NAME" >> ./nginx/development-ssl-conf.ext
+
+        # Sign with trusted local root CA
+        echo "Please provide the path to the root certificate authority (.pem):"
+        read -p "Certificate Path: "
+        echo
+        SSL_CA_CERT=$REPLY
+
+        echo "Please provide the path to the root certificate authority key (.key):"
+        read -p "Key Path: "
+        echo
+        SSL_CA_KEY=$REPLY
+
+        # Create Cert
+        echo "Creating certificate / key pair..."
+
+        if ! openssl x509 -req -in ./nginx/development-certificate-request.csr -CA $SSL_CA_CERT -CAkey $SSL_CA_KEY -CAcreateserial -out ./nginx/development-certificate.crt -days 825 -sha256 -extfile ./nginx/development-ssl-conf.ext
+        then
+            tput setab 1
+            tput setaf 0
+            echo
+            echo "SSL CREATE ERROR"
+            tput sgr0
+
+            echo "An error occured whilst generating the SSL certificate"
+            exit 1
+        fi
+
+        echo "SSL Certificate key pair was created"
+
+        # Create DHParam file also
+        echo "Creating DHParam key"
+        openssl dhparam -out ./nginx/development-ssl-dhparam.pem 2048
+
+        echo "SSL was successfully configured! :)"
+        echo
+
+    else
+        echo "We'll pick this up when you're ready then."
+        exit 0
+    fi
+
+elif [[ "$DIR" != "down" ]]
+then
+    echo "SSL is already configured, no need to generate certificates"
+fi
+
+# Check Environment File has been created
+ARTISAN_GENERATE_KEY=0
+if ! test -f "./src/.env"
+then
+    tput setab 3
+    tput setaf 0
+    echo
+    echo "MISSING .ENV FILE"
+    tput sgr0
+
+    echo "No .env file is present in the Laravel source - Would you like to create one now from the example .env?"
+    read -p "Y / N: " -n 1 -r
+
+    echo    # (optional) move to a new line
+    if [[ $REPLY =~ ^[Yy]$ ]]
+    then
+        # Copy exmaple file
+        cp ./src/.env.example ./src/.env
+
+        ARTISAN_GENERATE_KEY=1
+        
+        echo "Copied example .env file - Will generate key when Docker has composed, moving on"
+    else
+        tput setab 1
+        echo "Continuing without .env file"
+        tput sgr0
+    fi
+fi
+
+# Write mDNS conf file with current machine hostname
+echo "{ \"parentHost\" : \"${HOSTNAME}\" }" > ./mdns-listener/mdns.conf.json
+
+# Check Node is Installed
+if ! which node > /dev/null
+then
+    echo "Node is not installed - Please install before continuing"
+    exit 0
+fi
+
+# Configure hosts for mDNS
+VH_EXISTS=0
+if test -f $VHOST_FILE && [[ -n $(grep "##dev-vhost:$VH_BASE_NAME" $VHOST_FILE) ]]
+then
+    VH_EXISTS=1
+fi
+
+# Add to hosts if ADD
+if [[ "$DIR" = "up" ]] && [[ $VH_EXISTS = 0 ]]
+then
+
+    echo -e "##dev-vhost:$VH_BASE_NAME\n$VH_BASE_NAME\n##dev-vhost-end:$VH_BASE_NAME" >> $VHOST_FILE
+
+# Remove from hosts if REMOVE
+elif [[ "$DIR" = "down" ]] && [[ $VH_EXISTS = 1 ]]
+then
+    VH_EXISTS_START=$(grep -n "##dev-vhost:$VH_BASE_NAME" $VHOST_FILE | cut -f1 -d:)
+    VH_EXISTS_END=$(grep -n "##dev-vhost-end:$VH_BASE_NAME" $VHOST_FILE | cut -f1 -d:)
+
+    if [[ -z $VH_EXISTS_END ]]
+    then
+        echo "Missing end tag for host in VHOSTS file - Please remove old entry manually"
+        exit 1
+    fi
+
+    sed -i '' -e "${VH_EXISTS_START},${VH_EXISTS_END}d" $VHOST_FILE
+fi
+
+# If down, close docker and exit
+if [[ "$DIR" = "down" ]]
+then
+    docker-compose down
+
+    echo ""
+    echo "Closed development server - Bye!"
+    exit 0
+fi
+
+# Going Up
+echo "Starting docker..."
+docker-compose up -d
+
+echo "Docker composed!"
+
+# Update Composer
+if [[ $BYPASS_UPDATES = 0 ]]
+then
+    docker-compose run --rm composer update
+else
+    echo "Skipping composer updates"
+fi
+
+# Generate key with artisan if needed
+if [[ $ARTISAN_GENERATE_KEY = 1 ]]
+then
+    echo "Generating app key via artisan"
+    docker-compose run --rm artisan key:generate
+fi
+
+# Start mDNS server
+cd ./mdns-listener
+npm install
+npm start
+
+# On close of node, go down
+cd ./../
+./dev down

@@ -1,0 +1,109 @@
+version: "3"
+
+networks:
+  app:
+
+services:
+  nginx:
+    image: nginx:stable-alpine
+    container_name: nginx
+    ports:
+      - "8088:80"
+      - "8090:443"
+    volumes:
+      - ./src:/var/www/html
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf
+      - ./nginx/development-certificate.crt:/etc/ssl/certs/certificate.crt
+      - ./nginx/development-key.key:/etc/ssl/private/key.key
+      - ./nginx/development-ssl-dhparam.pem:/etc/ssl/certs/dhparam.pem
+    depends_on:
+      - php
+      - mysql
+    networks:
+      - app
+
+  mysql:
+    image: mysql:5.7.31
+    container_name: mysql
+    restart: unless-stopped
+    tty: true
+    ports:
+      - "4306:3306"
+    volumes:
+      - ./mysql:/var/lib/mysql
+    environment:
+      MYSQL_DATABASE: app
+      MYSQL_USER: app
+      MYSQL_PASSWORD: password
+      MYSQL_ROOT_PASSWORD: secret
+      SERVICE_TAGS: dev
+      SERVICE_NAME: mysql
+    networks:
+      - app
+
+  redis:
+    image: redis:5.0-alpine
+    container_name: redis
+    restart: unless-stopped
+    tty: true
+    volumes: 
+      - ./redis/data:/data
+      - ./redis/redis.conf://usr/local/etc/redis/redis.conf
+    command: "redis-server /usr/local/etc/redis/redis.conf"
+    networks:
+      - app
+
+  php:
+    build:
+      context: .
+      dockerfile: PHPDockerfile 
+    container_name: php
+    volumes:
+      - ./src:/var/www/html:cached
+    ports:
+      - "9000:9000"
+    networks:
+      - app
+
+  composer:
+    build:
+      context: .
+      dockerfile: PHPDockerfile
+    container_name: composer
+    volumes:
+      - ./src:/var/www/html
+    working_dir: /var/www/html
+    entrypoint: [ "php", "/usr/bin/composer" ]
+    networks:
+      - app
+
+  artisan:
+    build:
+      context: .
+      dockerfile: PHPDockerfile 
+    container_name: artisan
+    volumes: 
+      - ./src:/var/www/html
+    depends_on:
+      - mysql
+    working_dir: "/var/www/html"
+    entrypoint: [ "/var/www/html/artisan" ]
+    tty: true
+    networks: 
+      - app
+
+  queue_worker:
+    build:
+      context: .
+      dockerfile: PHPDockerfile
+    container_name: queue_worker
+    volumes: 
+      - ./src:/var/www/html
+    depends_on:
+      - mysql
+      - redis
+    working_dir: "/var/www/html"
+    command: "php artisan queue:work"
+    restart: unless-stopped
+    networks: 
+      - app

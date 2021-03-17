@@ -1,0 +1,54 @@
+#!/bin/bash
+
+# Clear CLI
+clear
+
+# Ensure docker is running with the relevant containers
+echo "Commencing Tests"
+echo
+
+# Check PHP is up and running
+if ! docker-compose ps | grep "^php.*Up" >> /dev/null
+then
+    tput setab 1
+    echo
+    echo "PHP CONTAINER NOT RUNNING"
+    tput sgr0
+
+    echo "The PHP container is not running - Please restart Docker"
+    echo
+
+    exit 1
+else
+    tput setab 2
+    echo
+    echo "PHP Container Okay"
+    tput sgr0
+    echo
+fi
+
+# Run PHP Tests
+echo "Running PHP Test Suite"
+echo "----------------------"
+
+if ! docker-compose exec php php artisan test
+then
+    tput setab 1
+    echo
+    echo "PHP Test Suite FAILED - Exiting test"
+    tput sgr0
+    echo
+
+    exit 1
+fi
+
+# PHP Tests Passed
+tput setab 2
+echo
+echo "PHP Test Suite OKAY"
+tput sgr0
+echo
+
+# All Tests have passed
+echo "All tests have PASSED - Exiting"
+exit 0
